@@ -15,3 +15,28 @@ function generateRoomCode(): string {
   } while (rooms.has(code));
   return code;
 }
+
+export function createRoom(playerName: string): { room: Room; player: Player } {
+  const player: Player = {
+    id: randomUUID(),
+    socketId: null,
+    name: playerName,
+    connected: true,
+    isHost: true,
+  };
+
+  const room: Room = {
+    code: generateRoomCode(),
+    players: new Map([[player.id, player]]),
+    playerOrder: [player.id],
+    status: 'lobby',
+    hostId: player.id,
+  };
+
+  rooms.set(room.code, room);
+  return { room, player };
+}
+
+export function getRoom(code: string): Room | undefined {
+  return rooms.get(code.toUpperCase());
+}
