@@ -40,3 +40,18 @@ export function createRoom(playerName: string): { room: Room; player: Player } {
 export function getRoom(code: string): Room | undefined {
   return rooms.get(code.toUpperCase());
 }
+
+export function addPlayerToRoom(room: Room, playerName: string): Player {
+  const player: Player = {
+    id: randomUUID(),
+    socketId: null,
+    name: playerName,
+    connected: true,
+    isHost: false,
+  };
+
+  room.players.set(player.id, player);
+  room.playerOrder.push(player.id);
+
+  return player;
+}
