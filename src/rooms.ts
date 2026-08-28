@@ -68,3 +68,19 @@ export function getPlayerList(room: Room): Player[] {
     .map((id) => room.players.get(id))
     .filter((p): p is Player => Boolean(p));
 }
+
+export function removePlayerFromRoom(room: Room, playerId: string): void {
+  room.players.delete(playerId);
+  room.playerOrder = room.playerOrder.filter((id) => id !== playerId);
+
+  if (room.hostId === playerId && room.playerOrder.length > 0) {
+    const newHostId = room.playerOrder[0];
+    room.hostId = newHostId;
+    const newHost = room.players.get(newHostId);
+    if (newHost) newHost.isHost = true;
+  }
+
+  if (room.playerOrder.length === 0) {
+    rooms.delete(room.code);
+  }
+}
