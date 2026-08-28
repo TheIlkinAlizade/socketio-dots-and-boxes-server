@@ -4,6 +4,7 @@ import { Player, Room } from './types';
 const rooms = new Map<string, Room>();
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const PLAYER_COLORS = ['#FF5D8F', '#4CC9FF', '#FFB84C', '#3BD671', '#B18CFF', '#FF8A5B'];
 
 function generateRoomCode(): string {
   let code: string;
@@ -16,6 +17,10 @@ function generateRoomCode(): string {
   return code;
 }
 
+function colorForIndex(index: number): string {
+  return PLAYER_COLORS[index % PLAYER_COLORS.length];
+}
+
 export function createRoom(playerName: string): { room: Room; player: Player } {
   const player: Player = {
     id: randomUUID(),
@@ -23,6 +28,8 @@ export function createRoom(playerName: string): { room: Room; player: Player } {
     name: playerName,
     connected: true,
     isHost: true,
+    score: 0,
+    color: colorForIndex(0),
   };
 
   const room: Room = {
@@ -31,6 +38,7 @@ export function createRoom(playerName: string): { room: Room; player: Player } {
     playerOrder: [player.id],
     status: 'lobby',
     hostId: player.id,
+    game: null,
   };
 
   rooms.set(room.code, room);
@@ -48,6 +56,8 @@ export function addPlayerToRoom(room: Room, playerName: string): Player {
     name: playerName,
     connected: true,
     isHost: false,
+    score: 0,
+    color: colorForIndex(room.playerOrder.length),
   };
 
   room.players.set(player.id, player);

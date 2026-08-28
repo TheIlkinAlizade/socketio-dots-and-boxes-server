@@ -8,7 +8,7 @@ import {
   getPlayerList,
   removePlayerFromRoom,
 } from './rooms';
-import { createGameState } from './game';
+import { createGameState, applyMove } from './game';
 
 const PORT = process.env.PORT || 4000;
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
@@ -131,6 +131,55 @@ io.on('connection', (socket) => {
     io.to(room.code).emit('game_started', { game: room.game });
     ack({ ok: true });
   });
+
+  socket.on(
+    'make_move',
+    (
+      payload: { line: { row: number; col: number; orientation: 'horizontal' | 'vertical' } },
+      ack: (res: any) => void
+    ) => {
+      const link = socketToPlayer.get(socket.id);
+      if (!link) return ack({ ok: false, error: 'Not in a room.' });
+
+      const room = getRoom(link.roomCode);
+      if (!room || !room.game || room.status !== 'playing') {
+        return ack({ ok: false, error: 'No game in progress.' });
+      }
+
+      const { row, col, orientation } = payload.line || {};
+      const result = applyMove(room.game, link.playerId, row, col, orientation);
+
+      if (!result.ok) {
+        return ack({ ok: false, error: result.error });
+      }
+
+      for (const box of result.completedBoxes) {
+        const player = room.players.get(box.ownerId);
+        if (player) player.score += 1;
+      }
+
+      if (room.game.boxesFilled === room.game.totalBoxes) {
+        room.status = 'finished';
+      }
+
+      io.to(room.code).emit('move_made', {
+        line: payload.line,
+        drawnBy: link.playerId,
+        completedBoxes: result.completedBoxes,
+        currentTurnIndex: room.game.currentTurnIndex,
+        boxesFilled: room.game.boxesFilled,
+        scores: getPlayerList(room).map((p) => ({ id: p.id, score: p.score })),
+      });
+
+      if (room.status === 'finished') {
+        io.to(room.code).emit('game_over', {
+          scores: getPlayerList(room).map((p) => ({ id: p.id, score: p.score })),
+        });
+      }
+
+      ack({ ok: true });
+    }
+  );
 
   function handleLeave(socketId: string) {
     const link = socketToPlayer.get(socketId);

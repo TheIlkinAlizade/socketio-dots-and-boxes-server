@@ -5,6 +5,7 @@ export interface Player {
   connected: boolean;
   isHost: boolean;
   score: number;
+  color: string;
 }
 
 export interface GameState {
@@ -12,7 +13,7 @@ export interface GameState {
   gridHeight: number;
   horizontalLines: string[];
   verticalLines: string[];
-  boxOwners: (string | null)[][]; 
+  boxOwners: (string | null)[][];
   turnOrder: string[];
   currentTurnIndex: number;
   totalBoxes: number;
