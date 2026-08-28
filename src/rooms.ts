@@ -55,3 +55,16 @@ export function addPlayerToRoom(room: Room, playerName: string): Player {
 
   return player;
 }
+
+export function reconnectPlayer(room: Room, playerId: string): Player | undefined {
+  const player = room.players.get(playerId);
+  if (!player) return undefined;
+  player.connected = true;
+  return player;
+}
+
+export function getPlayerList(room: Room): Player[] {
+  return room.playerOrder
+    .map((id) => room.players.get(id))
+    .filter((p): p is Player => Boolean(p));
+}
