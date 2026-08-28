@@ -4,6 +4,19 @@ export interface Player {
   name: string;
   connected: boolean;
   isHost: boolean;
+  score: number;
+}
+
+export interface GameState {
+  gridWidth: number;
+  gridHeight: number;
+  horizontalLines: string[];
+  verticalLines: string[];
+  boxOwners: (string | null)[][]; 
+  turnOrder: string[];
+  currentTurnIndex: number;
+  totalBoxes: number;
+  boxesFilled: number;
 }
 
 export interface Room {
@@ -12,4 +25,5 @@ export interface Room {
   playerOrder: string[];
   status: 'lobby' | 'playing' | 'finished';
   hostId: string;
+  game: GameState | null;
 }

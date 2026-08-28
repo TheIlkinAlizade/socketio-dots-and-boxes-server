@@ -8,6 +8,7 @@ import {
   getPlayerList,
   removePlayerFromRoom,
 } from './rooms';
+import { createGameState } from './game';
 
 const PORT = process.env.PORT || 4000;
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
@@ -18,6 +19,9 @@ const io = new Server(httpServer, {
 });
 
 const socketToPlayer = new Map<string, { roomCode: string; playerId: string }>();
+
+const GRID_WIDTH = 5;
+const GRID_HEIGHT = 5;
 
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
@@ -65,6 +69,8 @@ io.on('connection', (socket) => {
           ok: true,
           playerId: player.id,
           players: getPlayerList(room),
+          game: room.game,
+          status: room.status,
         });
       }
 
@@ -102,7 +108,28 @@ io.on('connection', (socket) => {
   });
 
   socket.on('start_game', (_payload: unknown, ack: (res: any) => void) => {
-    ack({ ok: false, error: 'Not implemented yet.' });
+    const link = socketToPlayer.get(socket.id);
+    if (!link) return ack({ ok: false, error: 'Not in a room.' });
+
+    const room = getRoom(link.roomCode);
+    if (!room) return ack({ ok: false, error: 'Room not found.' });
+
+    if (room.hostId !== link.playerId) {
+      return ack({ ok: false, error: 'Only the host can start the game.' });
+    }
+
+    const connectedPlayers = room.playerOrder.filter(
+      (id) => room.players.get(id)?.connected
+    );
+    if (connectedPlayers.length < 2) {
+      return ack({ ok: false, error: 'Need at least 2 players.' });
+    }
+
+    room.status = 'playing';
+    room.game = createGameState(GRID_WIDTH, GRID_HEIGHT, connectedPlayers);
+
+    io.to(room.code).emit('game_started', { game: room.game });
+    ack({ ok: true });
   });
 
   function handleLeave(socketId: string) {
