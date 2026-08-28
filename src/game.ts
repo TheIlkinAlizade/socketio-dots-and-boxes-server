@@ -21,7 +21,6 @@ export function createGameState(gridWidth: number, gridHeight: number, turnOrder
 interface MoveResult {
   ok: true;
   completedBoxes: { row: number; col: number; ownerId: string }[];
-  turnAdvanced: boolean;
 }
 
 interface MoveError {
@@ -101,11 +100,22 @@ export function applyMove(
     }
   }
 
-  let turnAdvanced = false;
   if (completedBoxes.length === 0) {
     game.currentTurnIndex = (game.currentTurnIndex + 1) % game.turnOrder.length;
-    turnAdvanced = true;
   }
 
-  return { ok: true, completedBoxes, turnAdvanced };
+  return { ok: true, completedBoxes };
+}
+
+export function removePlayerFromTurnOrder(game: GameState, playerId: string): void {
+  const idx = game.turnOrder.indexOf(playerId);
+  if (idx === -1) return;
+
+  game.turnOrder.splice(idx, 1);
+  if (game.turnOrder.length === 0) return;
+
+  if (idx < game.currentTurnIndex) {
+    game.currentTurnIndex -= 1;
+  }
+  game.currentTurnIndex = game.currentTurnIndex % game.turnOrder.length;
 }

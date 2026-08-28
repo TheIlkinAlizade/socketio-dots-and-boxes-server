@@ -73,6 +73,24 @@ export function reconnectPlayer(room: Room, playerId: string): Player | undefine
   return player;
 }
 
+export function markPlayerDisconnected(room: Room, playerId: string): void {
+  const player = room.players.get(playerId);
+  if (!player) return;
+
+  player.connected = false;
+  player.socketId = null;
+
+  if (room.hostId === playerId) {
+    const nextHost = room.playerOrder
+      .map((id) => room.players.get(id))
+      .find((p) => p && p.connected && p.id !== playerId);
+    if (nextHost) {
+      nextHost.isHost = true;
+      room.hostId = nextHost.id;
+    }
+  }
+}
+
 export function getPlayerList(room: Room): Player[] {
   return room.playerOrder
     .map((id) => room.players.get(id))
@@ -93,4 +111,8 @@ export function removePlayerFromRoom(room: Room, playerId: string): void {
   if (room.playerOrder.length === 0) {
     rooms.delete(room.code);
   }
+}
+
+export function isRoomEmpty(room: Room): boolean {
+  return room.playerOrder.every((id) => !room.players.get(id)?.connected);
 }

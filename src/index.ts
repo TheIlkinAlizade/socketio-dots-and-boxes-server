@@ -5,13 +5,18 @@ import {
   getRoom,
   addPlayerToRoom,
   reconnectPlayer,
+  markPlayerDisconnected,
   getPlayerList,
   removePlayerFromRoom,
+  isRoomEmpty,
 } from './rooms';
-import { createGameState, applyMove } from './game';
+import { createGameState, applyMove, removePlayerFromTurnOrder } from './game';
 
 const PORT = process.env.PORT || 4000;
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
+const RECONNECT_GRACE_MS = 30_000;
+const GRID_WIDTH = 5;
+const GRID_HEIGHT = 5;
 
 const httpServer = createServer();
 const io = new Server(httpServer, {
@@ -19,9 +24,15 @@ const io = new Server(httpServer, {
 });
 
 const socketToPlayer = new Map<string, { roomCode: string; playerId: string }>();
+const disconnectTimers = new Map<string, NodeJS.Timeout>();
 
-const GRID_WIDTH = 5;
-const GRID_HEIGHT = 5;
+function timerKey(roomCode: string, playerId: string) {
+  return `${roomCode}:${playerId}`;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
 
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
@@ -61,6 +72,13 @@ io.on('connection', (socket) => {
         const player = reconnectPlayer(room, payload.playerId)!;
         player.socketId = socket.id;
 
+        const key = timerKey(room.code, player.id);
+        const pendingTimer = disconnectTimers.get(key);
+        if (pendingTimer) {
+          clearTimeout(pendingTimer);
+          disconnectTimers.delete(key);
+        }
+
         socket.join(room.code);
         socketToPlayer.set(socket.id, { roomCode: room.code, playerId: player.id });
         socket.to(room.code).emit('player_reconnected', { playerId: player.id });
@@ -99,15 +117,61 @@ io.on('connection', (socket) => {
   );
 
   socket.on('leave_room', () => {
-    handleLeave(socket.id);
+    const link = socketToPlayer.get(socket.id);
+    if (!link) return;
+    finalizeRemoval(link.roomCode, link.playerId);
+    socketToPlayer.delete(socket.id);
+    socket.leave(link.roomCode);
   });
 
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
-    handleLeave(socket.id);
+    const link = socketToPlayer.get(socket.id);
+    socketToPlayer.delete(socket.id);
+    if (!link) return;
+
+    const room = getRoom(link.roomCode);
+    if (!room) return;
+
+    markPlayerDisconnected(room, link.playerId);
+    io.to(room.code).emit('player_disconnected', { playerId: link.playerId });
+
+    const key = timerKey(room.code, link.playerId);
+    const timer = setTimeout(() => {
+      disconnectTimers.delete(key);
+      finalizeRemoval(link.roomCode, link.playerId);
+    }, RECONNECT_GRACE_MS);
+    disconnectTimers.set(key, timer);
   });
 
-  socket.on('start_game', (_payload: unknown, ack: (res: any) => void) => {
+  socket.on( 'start_game', (payload: { gridWidth?: number; gridHeight?: number }, ack: (res: any) => void) => {
+      const link = socketToPlayer.get(socket.id);
+      if (!link) return ack({ ok: false, error: 'Not in a room.' });
+
+      const room = getRoom(link.roomCode);
+      if (!room) return ack({ ok: false, error: 'Room not found.' });
+
+      if (room.hostId !== link.playerId) {
+        return ack({ ok: false, error: 'Only the host can start the game.' });
+      }
+
+      const connectedPlayers = room.playerOrder.filter((id) => room.players.get(id)?.connected);
+      if (connectedPlayers.length < 2) {
+        return ack({ ok: false, error: 'Need at least 2 players.' });
+      }
+
+      const width = clamp(payload.gridWidth ?? 5, 3, 9);
+      const height = clamp(payload.gridHeight ?? 5, 3, 9);
+
+      room.status = 'playing';
+      room.game = createGameState(width, height, connectedPlayers);
+
+      io.to(room.code).emit('game_started', { game: room.game });
+      ack({ ok: true });
+    }
+  );
+
+  socket.on('play_again', (_payload: unknown, ack: (res: any) => void) => {
     const link = socketToPlayer.get(socket.id);
     if (!link) return ack({ ok: false, error: 'Not in a room.' });
 
@@ -115,20 +179,23 @@ io.on('connection', (socket) => {
     if (!room) return ack({ ok: false, error: 'Room not found.' });
 
     if (room.hostId !== link.playerId) {
-      return ack({ ok: false, error: 'Only the host can start the game.' });
+      return ack({ ok: false, error: 'Only the host can start a rematch.' });
     }
 
-    const connectedPlayers = room.playerOrder.filter(
-      (id) => room.players.get(id)?.connected
-    );
+    const connectedPlayers = room.playerOrder.filter((id) => room.players.get(id)?.connected);
     if (connectedPlayers.length < 2) {
       return ack({ ok: false, error: 'Need at least 2 players.' });
+    }
+
+    for (const id of room.playerOrder) {
+      const p = room.players.get(id);
+      if (p) p.score = 0;
     }
 
     room.status = 'playing';
     room.game = createGameState(GRID_WIDTH, GRID_HEIGHT, connectedPlayers);
 
-    io.to(room.code).emit('game_started', { game: room.game });
+    io.to(room.code).emit('room_reset', { game: room.game, players: getPlayerList(room) });
     ack({ ok: true });
   });
 
@@ -181,17 +248,40 @@ io.on('connection', (socket) => {
     }
   );
 
-  function handleLeave(socketId: string) {
-    const link = socketToPlayer.get(socketId);
-    if (!link) return;
-
-    const room = getRoom(link.roomCode);
-    socketToPlayer.delete(socketId);
+  function finalizeRemoval(roomCode: string, playerId: string) {
+    const room = getRoom(roomCode);
     if (!room) return;
 
-    removePlayerFromRoom(room, link.playerId);
-    socket.leave(room.code);
-    io.to(room.code).emit('player_left', { playerId: link.playerId });
+    const player = room.players.get(playerId);
+    if (!player || player.connected) return; // they reconnected before grace expired
+
+    if (room.status === 'playing' && room.game) {
+      const wasCurrentTurn = room.game.turnOrder[room.game.currentTurnIndex] === playerId;
+      removePlayerFromTurnOrder(room.game, playerId);
+      if (room.game.turnOrder.length < 2) {
+        room.status = 'finished';
+        io.to(room.code).emit('game_over', {
+          scores: getPlayerList(room).map((p) => ({ id: p.id, score: p.score })),
+        });
+      } else if (wasCurrentTurn) {
+        io.to(room.code).emit('turn_skipped', {
+          skippedPlayerId: playerId,
+          currentTurnIndex: room.game.currentTurnIndex,
+        });
+      }
+    }
+
+    removePlayerFromRoom(room, playerId);
+    io.to(room.code).emit('player_left', { playerId });
+
+    if (isRoomEmpty(room)) {
+      disconnectTimers.forEach((timer, key) => {
+        if (key.startsWith(`${roomCode}:`)) {
+          clearTimeout(timer);
+          disconnectTimers.delete(key);
+        }
+      });
+    }
   }
 });
 
