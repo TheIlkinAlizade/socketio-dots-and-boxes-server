@@ -11,8 +11,8 @@ export interface Player {
 export interface GameState {
   gridWidth: number;
   gridHeight: number;
-  horizontalLines: string[];
-  verticalLines: string[];
+  horizontalLines: Record<string, string>;
+  verticalLines: Record<string, string>;
   boxOwners: (string | null)[][];
   turnOrder: string[];
   currentTurnIndex: number;
