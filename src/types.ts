@@ -6,6 +6,7 @@ export interface Player {
   isHost: boolean;
   score: number;
   color: string;
+  resigned: boolean;
 }
 
 export interface GameState {

@@ -8,9 +8,10 @@ import {
   markPlayerDisconnected,
   getPlayerList,
   removePlayerFromRoom,
-  isRoomEmpty,
+  resetPlayersForRematch,
 } from './rooms';
 import { createGameState, applyMove, removePlayerFromTurnOrder } from './game';
+import { Room } from './types';
 
 const PORT = process.env.PORT || 4000;
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
@@ -27,6 +28,61 @@ function timerKey(roomCode: string, playerId: string) {
 }
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
+}
+function clearDisconnectTimer(roomCode: string, playerId: string) {
+  const key = timerKey(roomCode, playerId);
+  const timer = disconnectTimers.get(key);
+  if (timer) {
+    clearTimeout(timer);
+    disconnectTimers.delete(key);
+  }
+}
+
+function determineWinnerId(room: Room): string | null {
+  const active = getPlayerList(room).filter((p) => !p.resigned);
+  if (active.length === 0) return null;
+  if (active.length === 1) return active[0].id;
+
+  const topScore = Math.max(...active.map((p) => p.score));
+  const topScorers = active.filter((p) => p.score === topScore);
+  return topScorers.length === 1 ? topScorers[0].id : null;
+}
+
+function emitGameOver(room: Room) {
+  io.to(room.code).emit('game_over', {
+    scores: getPlayerList(room).map((p) => ({ id: p.id, score: p.score })),
+    winnerId: determineWinnerId(room),
+  });
+}
+
+function removePlayerAndHandleEffects(roomCode: string, playerId: string) {
+  const room = getRoom(roomCode);
+  if (!room) return;
+
+  if (room.status === 'playing' && room.game) {
+    const wasCurrentTurn = room.game.turnOrder[room.game.currentTurnIndex] === playerId;
+    removePlayerFromTurnOrder(room.game, playerId);
+    if (room.game.turnOrder.length < 2) {
+      room.status = 'finished';
+      emitGameOver(room);
+    } else if (wasCurrentTurn) {
+      io.to(room.code).emit('turn_skipped', { skippedPlayerId: playerId, currentTurnIndex: room.game.currentTurnIndex });
+    }
+  }
+
+  removePlayerFromRoom(room, playerId);
+  clearDisconnectTimer(roomCode, playerId);
+  io.to(roomCode).emit('player_left', { playerId });
+
+  const stillExists = getRoom(roomCode);
+  if (!stillExists) return;
+
+  const connectedCount = stillExists.playerOrder.filter((id) => stillExists.players.get(id)?.connected).length;
+  if (connectedCount <= 1 && stillExists.status !== 'lobby') {
+    stillExists.status = 'lobby';
+    stillExists.game = null;
+    io.to(stillExists.code).emit('room_back_to_lobby', { players: getPlayerList(stillExists) });
+  }
 }
 
 io.on('connection', (socket) => {
@@ -53,13 +109,7 @@ io.on('connection', (socket) => {
       if (payload.playerId && room.players.has(payload.playerId)) {
         const player = reconnectPlayer(room, payload.playerId)!;
         player.socketId = socket.id;
-
-        const key = timerKey(room.code, player.id);
-        const pendingTimer = disconnectTimers.get(key);
-        if (pendingTimer) {
-          clearTimeout(pendingTimer);
-          disconnectTimers.delete(key);
-        }
+        clearDisconnectTimer(room.code, player.id);
 
         socket.join(room.code);
         socketToPlayer.set(socket.id, { roomCode: room.code, playerId: player.id });
@@ -86,9 +136,9 @@ io.on('connection', (socket) => {
   socket.on('leave_room', () => {
     const link = socketToPlayer.get(socket.id);
     if (!link) return;
-    finalizeRemoval(link.roomCode, link.playerId);
     socketToPlayer.delete(socket.id);
     socket.leave(link.roomCode);
+    removePlayerAndHandleEffects(link.roomCode, link.playerId);
   });
 
   socket.on('kick_player', (payload: { playerId: string }, ack: (res: any) => void) => {
@@ -105,23 +155,37 @@ io.on('connection', (socket) => {
 
     if (target.socketId) {
       io.to(target.socketId).emit('kicked');
-      const targetSocket = io.sockets.sockets.get(target.socketId);
-      targetSocket?.leave(room.code);
+      io.sockets.sockets.get(target.socketId)?.leave(room.code);
       socketToPlayer.delete(target.socketId);
     }
 
-    const key = timerKey(room.code, target.id);
-    const pendingTimer = disconnectTimers.get(key);
-    if (pendingTimer) {
-      clearTimeout(pendingTimer);
-      disconnectTimers.delete(key);
-    }
+    removePlayerAndHandleEffects(room.code, target.id);
+    ack({ ok: true });
+  });
 
-    if (room.status === 'playing' && room.game) {
-      removePlayerFromTurnOrder(room.game, target.id);
+  socket.on('resign', (_payload: unknown, ack: (res: any) => void) => {
+    const link = socketToPlayer.get(socket.id);
+    if (!link) return ack({ ok: false, error: 'Not in a room.' });
+
+    const room = getRoom(link.roomCode);
+    if (!room || !room.game || room.status !== 'playing') return ack({ ok: false, error: 'No game in progress.' });
+
+    const player = room.players.get(link.playerId);
+    if (!player) return ack({ ok: false, error: 'Player not found.' });
+    if (player.resigned) return ack({ ok: false, error: 'Already resigned.' });
+
+    player.resigned = true;
+    const wasCurrentTurn = room.game.turnOrder[room.game.currentTurnIndex] === link.playerId;
+    removePlayerFromTurnOrder(room.game, link.playerId);
+
+    io.to(room.code).emit('player_resigned', { playerId: link.playerId });
+
+    if (room.game.turnOrder.length < 2) {
+      room.status = 'finished';
+      emitGameOver(room);
+    } else if (wasCurrentTurn) {
+      io.to(room.code).emit('turn_skipped', { skippedPlayerId: link.playerId, currentTurnIndex: room.game.currentTurnIndex });
     }
-    removePlayerFromRoom(room, target.id);
-    io.to(room.code).emit('player_left', { playerId: target.id });
 
     ack({ ok: true });
   });
@@ -141,7 +205,10 @@ io.on('connection', (socket) => {
     const key = timerKey(room.code, link.playerId);
     const timer = setTimeout(() => {
       disconnectTimers.delete(key);
-      finalizeRemoval(link.roomCode, link.playerId);
+      const stillRoom = getRoom(link.roomCode);
+      const stillPlayer = stillRoom?.players.get(link.playerId);
+      if (!stillPlayer || stillPlayer.connected) return;
+      removePlayerAndHandleEffects(link.roomCode, link.playerId);
     }, RECONNECT_GRACE_MS);
     disconnectTimers.set(key, timer);
   });
@@ -172,22 +239,13 @@ io.on('connection', (socket) => {
 
     const room = getRoom(link.roomCode);
     if (!room) return ack({ ok: false, error: 'Room not found.' });
-    if (room.hostId !== link.playerId) return ack({ ok: false, error: 'Only the host can start a rematch.' });
+    if (room.hostId !== link.playerId) return ack({ ok: false, error: 'Only the host can reset the room.' });
 
-    const connectedPlayers = room.playerOrder.filter((id) => room.players.get(id)?.connected);
-    if (connectedPlayers.length < 2) return ack({ ok: false, error: 'Need at least 2 players.' });
+    resetPlayersForRematch(room);
+    room.status = 'lobby';
+    room.game = null;
 
-    for (const id of room.playerOrder) {
-      const p = room.players.get(id);
-      if (p) p.score = 0;
-    }
-
-    const width = room.game?.gridWidth ?? 5;
-    const height = room.game?.gridHeight ?? 5;
-
-    room.status = 'playing';
-    room.game = createGameState(width, height, connectedPlayers);
-    io.to(room.code).emit('room_reset', { game: room.game, players: getPlayerList(room) });
+    io.to(room.code).emit('room_back_to_lobby', { players: getPlayerList(room) });
     ack({ ok: true });
   });
 
@@ -208,7 +266,6 @@ io.on('connection', (socket) => {
         const player = room.players.get(box.ownerId);
         if (player) player.score += 1;
       }
-
       if (room.game.boxesFilled === room.game.totalBoxes) room.status = 'finished';
 
       io.to(room.code).emit('move_made', {
@@ -220,44 +277,11 @@ io.on('connection', (socket) => {
         scores: getPlayerList(room).map((p) => ({ id: p.id, score: p.score })),
       });
 
-      if (room.status === 'finished') {
-        io.to(room.code).emit('game_over', { scores: getPlayerList(room).map((p) => ({ id: p.id, score: p.score })) });
-      }
+      if (room.status === 'finished') emitGameOver(room);
 
       ack({ ok: true });
     }
   );
-
-  function finalizeRemoval(roomCode: string, playerId: string) {
-    const room = getRoom(roomCode);
-    if (!room) return;
-
-    const player = room.players.get(playerId);
-    if (!player || player.connected) return;
-
-    if (room.status === 'playing' && room.game) {
-      const wasCurrentTurn = room.game.turnOrder[room.game.currentTurnIndex] === playerId;
-      removePlayerFromTurnOrder(room.game, playerId);
-      if (room.game.turnOrder.length < 2) {
-        room.status = 'finished';
-        io.to(room.code).emit('game_over', { scores: getPlayerList(room).map((p) => ({ id: p.id, score: p.score })) });
-      } else if (wasCurrentTurn) {
-        io.to(room.code).emit('turn_skipped', { skippedPlayerId: playerId, currentTurnIndex: room.game.currentTurnIndex });
-      }
-    }
-
-    removePlayerFromRoom(room, playerId);
-    io.to(room.code).emit('player_left', { playerId });
-
-    if (isRoomEmpty(room)) {
-      disconnectTimers.forEach((timer, key) => {
-        if (key.startsWith(`${roomCode}:`)) {
-          clearTimeout(timer);
-          disconnectTimers.delete(key);
-        }
-      });
-    }
-  }
 });
 
 httpServer.listen(PORT, () => {

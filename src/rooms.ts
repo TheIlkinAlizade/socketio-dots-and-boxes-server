@@ -9,10 +9,7 @@ const PLAYER_COLORS = ['#FF5D8F', '#4CC9FF', '#FFB84C', '#3BD671', '#B18CFF', '#
 function generateRoomCode(): string {
   let code: string;
   do {
-    code = Array.from(
-      { length: 5 },
-      () => CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]
-    ).join('');
+    code = Array.from({ length: 5 }, () => CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]).join('');
   } while (rooms.has(code));
   return code;
 }
@@ -30,6 +27,7 @@ export function createRoom(playerName: string): { room: Room; player: Player } {
     isHost: true,
     score: 0,
     color: colorForIndex(0),
+    resigned: false,
   };
 
   const room: Room = {
@@ -58,11 +56,11 @@ export function addPlayerToRoom(room: Room, playerName: string): Player {
     isHost: false,
     score: 0,
     color: colorForIndex(room.playerOrder.length),
+    resigned: false,
   };
 
   room.players.set(player.id, player);
   room.playerOrder.push(player.id);
-
   return player;
 }
 
@@ -76,7 +74,6 @@ export function reconnectPlayer(room: Room, playerId: string): Player | undefine
 export function markPlayerDisconnected(room: Room, playerId: string): void {
   const player = room.players.get(playerId);
   if (!player) return;
-
   player.connected = false;
   player.socketId = null;
 
@@ -92,9 +89,7 @@ export function markPlayerDisconnected(room: Room, playerId: string): void {
 }
 
 export function getPlayerList(room: Room): Player[] {
-  return room.playerOrder
-    .map((id) => room.players.get(id))
-    .filter((p): p is Player => Boolean(p));
+  return room.playerOrder.map((id) => room.players.get(id)).filter((p): p is Player => Boolean(p));
 }
 
 export function removePlayerFromRoom(room: Room, playerId: string): void {
@@ -110,6 +105,16 @@ export function removePlayerFromRoom(room: Room, playerId: string): void {
 
   if (room.playerOrder.length === 0) {
     rooms.delete(room.code);
+  }
+}
+
+export function resetPlayersForRematch(room: Room): void {
+  for (const id of room.playerOrder) {
+    const p = room.players.get(id);
+    if (p) {
+      p.score = 0;
+      p.resigned = false;
+    }
   }
 }
 
